@@ -1,0 +1,156 @@
+ШАГ 2: РОЛИ USER/ADMIN И РАЗГРАНИЧЕНИЕ ДОСТУПА
+================================================
+
+Этот небольшой проект продолжает шаг 1: React получает JWT, а Spring Boot
+проверяет токен. Теперь в токене передаются роли USER и ADMIN, а backend
+ограничивает административный endpoint. Это один backend и один frontend;
+база данных и Docker не нужны.
+
+СТРУКТУРА
+---------
+
+backend/
+  Spring Boot API на порту 8080.
+  SecurityConfig.java — пользователи для обучения, BCrypt, CORS, stateless
+    SecurityFilterChain и включение @EnableMethodSecurity. При каждом входе
+    возвращается новый объект пользователя: Spring очищает credentials после проверки.
+  AuthController.java — проверяет логин/пароль и возвращает JWT вместе со списком ролей.
+  JwtService.java — подписывает JWT; записывает claim roles и проверяет токен.
+  JwtAuthenticationFilter.java — OncePerRequestFilter проверяет подпись/срок
+    и создаёт Authentication с правами из подписанного claim.
+  DemoController.java — обычный endpoint /api/hello, ADMIN endpoint /api/admin
+    с @PreAuthorize и endpoint /api/me для текущих ролей.
+
+frontend/
+  React + Vite на порту 5173.
+  Форма входа, показ роли, обычная кнопка, кнопка панели администратора для ADMIN
+  и учебная кнопка проверки ответа 403 для USER.
+
+ТРЕБОВАНИЯ
+----------
+
+- Java 21+
+- Maven 3.9+
+- Node.js 20+ и npm
+
+УЧЕБНЫЕ ПОЛЬЗОВАТЕЛИ
+--------------------
+
+student / password123  → USER
+admin   / admin123     → ADMIN
+
+Пользователи заданы в памяти в SecurityConfig.java. Пароли сравниваются с BCrypt
+(хеш вычисляется при старте). Это только учебные учётные данные.
+
+ЗАПУСК
+-----
+
+Откройте два терминала.
+
+Терминал 1 — backend:
+
+  cd /home/karim/spring_security_steps/step_2/backend
+  mvn spring-boot:run
+
+Терминал 2 — React:
+
+  cd /home/karim/spring_security_steps/step_2/frontend
+  npm install
+  npm run dev
+
+Откройте http://localhost:5173
+
+npm install и первая команда Maven скачивают зависимости при первом запуске.
+
+ЧТО ПОПРОБОВАТЬ
+---------------
+
+1. Войдите как student / password123. Увидите роль USER; кнопки администратора
+   нет. Нажмите «Проверить ответ сервера 403». API ответит HTTP 403 Forbidden,
+   и интерфейс покажет понятное объяснение.
+2. Нажмите выход, войдите как admin / admin123. Увидите роль ADMIN и кнопку
+   «Открыть панель администратора». Endpoint вернёт успешный ответ.
+3. Обе роли могут обращаться к /api/hello.
+
+КАК УСТРОЕН RBAC
+----------------
+
+RBAC — Role-Based Access Control, управление доступом на основе ролей:
+пользователю назначается роль, а endpoint проверяет наличие нужного права.
+
+1. При входе AuthenticationManager проверяет логин и пароль через UserDetailsService
+   и BCryptPasswordEncoder.
+2. JwtService кладёт в JWT subject (логин) и подписанный claim roles, например
+   ["ROLE_USER"] или ["ROLE_ADMIN"]. При выдаче ответа роль показывается React
+   как USER или ADMIN.
+3. React использует роль, чтобы показать подходящие кнопки. USER не видит кнопку
+   администратора. Для обучения у USER есть отдельная кнопка, которая намеренно
+   вызывает тот же защищённый endpoint и показывает отказ 403.
+4. JwtAuthenticationFilter проверяет подпись и срок действия токена и помещает
+   роли из подписанного claim в Spring Security Authentication.
+5. В DemoController метод:
+
+   @PreAuthorize("hasRole('ADMIN')")
+   public Map<String, Object> admin(...)
+
+   доступен только ADMIN. hasRole('ADMIN') автоматически проверяет authority
+   ROLE_ADMIN. Для USER сервер отвечает 403. Это серверная проверка, её нельзя
+   заменить скрытием кнопки в браузере.
+
+6. @EnableMethodSecurity в SecurityConfig включает обработку @PreAuthorize.
+   Правила общей цепочки требуют JWT для /api/**, а аннотация метода задаёт
+   дополнительное требование конкретной роли.
+
+ПРОВЕРКА ЧЕРЕЗ CURL
+------------------
+
+Без JWT защищённый endpoint возвращает 401:
+
+  curl -i http://localhost:8080/api/admin
+
+Получить USER token:
+
+  curl -s -X POST http://localhost:8080/api/auth/login \
+    -H 'Content-Type: application/json' \
+    -d '{"username":"student","password":"password123"}'
+
+Получить ADMIN token:
+
+  curl -s -X POST http://localhost:8080/api/auth/login \
+    -H 'Content-Type: application/json' \
+    -d '{"username":"admin","password":"admin123"}'
+
+Скопируйте поле token из ответа, затем подставьте его:
+
+  curl -i http://localhost:8080/api/admin \
+    -H 'Authorization: Bearer USER_TOKEN'
+
+Ожидается 403 для USER. С ADMIN_TOKEN тот же запрос вернёт 200:
+
+  curl -i http://localhost:8080/api/admin \
+    -H 'Authorization: Bearer ADMIN_TOKEN'
+
+ПРИНЦИПЫ БЕЗОПАСНОСТИ И ОГРАНИЧЕНИЯ ДЕМО
+---------------------------------------
+
+- Backend — источник истины. Скрытая кнопка не защищает API; каждый endpoint
+  должен проверять права на сервере.
+- Роли берутся из подписанного JWT. Клиент не может изменить роль внутри токена,
+  не нарушив подпись. Секретный ключ хранится только на backend.
+- JWT только подписан, но его payload не зашифрован. Не помещайте в claims пароли
+  и секретную информацию.
+- В этом учебном варианте роли читаются из токена до истечения его срока (30 минут).
+  Если роль пользователя поменяется, уже выданный JWT сохранит старую роль до
+  истечения. В производственной системе проектируют короткий срок жизни токена,
+  отзыв/обновление токенов или повторную проверку актуальных полномочий.
+- React хранит JWT и список ролей в localStorage. Список ролей используется только
+  для UI и может быть изменён пользователем; backend не доверяет UI и проверяет
+  подписанный JWT. XSS может украсть токен из localStorage.
+- CORS разрешает браузеру обращаться к backend только с http://localhost:5173;
+  CORS не заменяет аутентификацию или авторизацию.
+- CSRF отключён для учебного stateless API, который принимает JWT в заголовке
+  Authorization. При переносе токена в cookie нужно отдельно проектировать CSRF-защиту.
+- Демонстрационный ключ задан для локального обучения. Не публикуйте сервис и не
+  используйте этот ключ/пароли в production. В реальной системе необходимы HTTPS,
+  случайный секрет из secret manager, уникальные пароли и надёжное управление
+  пользователями/ролями.
